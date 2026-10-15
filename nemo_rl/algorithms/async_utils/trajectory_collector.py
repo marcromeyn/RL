@@ -49,6 +49,7 @@ from nemo_rl.data.multimodal_utils import PackedTensor
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.environments.nemo_gym import should_use_nemo_gym
+from nemo_rl.environments.nemo_gym_rollout_callbacks import RolloutCallbackContext
 from nemo_rl.experience.interfaces import (
     NEMO_GYM_TASK_INDEX_KEY,
     NEXT_NEMO_GYM_TASK_INDEX_KEY,
@@ -1511,8 +1512,13 @@ class AsyncTrajectoryCollector:
         num_generations: int,
         use_nemo_gym: bool,
         task_index_to_group_index: dict[int, int],
+        rollout_context: Optional[RolloutCallbackContext] = None,
     ) -> AsyncGenerator[RolloutGroupResult, None]:
-        """Yield prompt groups from either backend through one result type."""
+        """Yield prompt groups from either backend through one result type.
+
+        ``rollout_context`` reaches NeMo-Gym rollout result callbacks only; the
+        other backend has none.
+        """
         if use_nemo_gym:
             # Import here to keep the NeMo-Gym dependency local to its backend.
             from nemo_rl.experience.rollouts import (
@@ -1559,6 +1565,7 @@ class AsyncTrajectoryCollector:
                 ),
                 deduplicate_multimodal_data=self._deduplicate_multimodal_data,
                 debug_payload_metrics=self._debug_payload_metrics,
+                rollout_context=rollout_context,
             ):
                 task_index = rollout_result.task_index
                 if task_index is None:
@@ -1879,6 +1886,13 @@ class AsyncTrajectoryCollector:
                     num_generations=num_generations,
                     use_nemo_gym=use_nemo_gym,
                     task_index_to_group_index=task_index_to_group_index,
+                    # The training step these trajectories target, and the
+                    # weights generation started from.
+                    rollout_context=RolloutCallbackContext(
+                        step=target_weight_version,
+                        weight_version=generation_weight_version,
+                        phase="train",
+                    ),
                 ):
                     group_index = rollout_result.group_index
                     if group_index not in expected_group_indices:

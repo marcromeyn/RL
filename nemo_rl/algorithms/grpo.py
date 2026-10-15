@@ -99,6 +99,7 @@ from nemo_rl.environments.nemo_gym import (
     should_use_nemo_gym,
     validate_dataset_agent_coverage,
 )
+from nemo_rl.environments.nemo_gym_rollout_callbacks import RolloutCallbackContext
 from nemo_rl.environments.utils import shutdown_environments
 from nemo_rl.experience.interfaces import (
     FRONTIER_ORDINAL_KEY,
@@ -3467,6 +3468,11 @@ def _grpo_train_impl(
                             debug_payload_metrics=(
                                 master_config.grpo.debug_payload_metrics
                             ),
+                            # The step these rollout metrics are logged at. Sync
+                            # GRPO has no separate weight-version counter.
+                            rollout_context=RolloutCallbackContext(
+                                step=total_steps + 1, phase="train"
+                            ),
                         )
                         repeated_batch = nemo_gym_rollout_result.final_batch
                         rollout_metrics = nemo_gym_rollout_result.rollout_metrics
@@ -4525,6 +4531,9 @@ def validate(
                         master_config.grpo.deduplicate_multimodal_data
                     ),
                     debug_payload_metrics=master_config.grpo.debug_payload_metrics,
+                    rollout_context=RolloutCallbackContext(
+                        step=step, phase="validation"
+                    ),
                 )
                 val_batch = nemo_gym_rollout_result.final_batch
                 gen_metrics = nemo_gym_rollout_result.rollout_metrics

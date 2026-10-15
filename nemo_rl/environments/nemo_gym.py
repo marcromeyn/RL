@@ -62,6 +62,11 @@ from nemo_rl.environments.nemo_gym_multimodal import (
     _without_initial_media_sources,
     normalize_media_in_examples,
 )
+from nemo_rl.environments.nemo_gym_rollout_callbacks import (
+    RolloutCallbackContext,
+    RolloutResultCallbacks,
+    validate_rollout_result_callback_paths,
+)
 from nemo_rl.environments.nemo_gym_shards import (
     DEFAULT_PLACEMENT_STRATEGY,
     SHARDING_CONFIG_KEYS,
@@ -387,6 +392,11 @@ class NemoGymConfig(TypedDict):
     # server, switches run_rollouts to receipt mode, and assembles receipts
     # from the manifest control route. None/absent = legacy token-echo path.
     token_capture: NotRequired[Dict[str, Any] | None]
+    # "module:callable" import paths called once per completed rollout with
+    # the raw Gym result, before any postprocessing. Resolved inside the
+    # NemoGym actor's process. Absent/empty = no callbacks. See
+    # nemo_rl/environments/nemo_gym_rollout_callbacks.py.
+    rollout_result_callbacks: NotRequired[List[str] | None]
 
 
 # Gym control-plane server name (the model server hosting the ledger) and the
@@ -648,6 +658,12 @@ class NemoGym(EnvironmentInterface):
         # complete so diagnostics and focused tests do not fail with AttributeError.
         self._token_capture_enabled = False
         self._pad_dynamic_image_shapes = bool(cfg.get("pad_dynamic_image_shapes"))
+        # Resolved here, in the actor's own process and venv, so an unimportable
+        # callback fails actor startup instead of the first rollout. None when
+        # none are configured, which keeps the rollout path free of callback work.
+        self._rollout_result_callbacks = RolloutResultCallbacks.from_config(
+            cfg.get("rollout_result_callbacks")
+        )
         # Reconstruct the processor inside the actor (rather than serializing it
         # per rollout call) for full-trajectory multimodal postprocessing.
         self._processor: Optional[Any] = None
@@ -958,6 +974,7 @@ Depending on your data shape, you may want to change these values."""
         timer_prefix: str,
         deduplicate_multimodal_data: bool = False,
         per_prompt: bool = False,
+        rollout_context: Optional[RolloutCallbackContext] = None,
     ) -> AsyncGenerator[tuple[int, dict, dict, dict | None], None]:
         """Stream postprocessed rollouts as NeMo-Gym tasks complete.
 
@@ -982,6 +999,10 @@ Depending on your data shape, you may want to change these values."""
                 Ray actor. On the single-controller path a step issues one of
                 these per prompt, so the span belongs in ``per_prompt`` rather
                 than ``per_step``, whose count is meant to scale with steps.
+            rollout_context: Training context (step, weight version, phase)
+                forwarded unchanged to ``env.nemo_gym.rollout_result_callbacks``.
+                Only the caller knows it; ``None`` when it does not. Unused when
+                no callbacks are configured.
 
         Yields:
             One ``(rowidx, resolved_agent_ref, result, timing_metrics)`` tuple
@@ -1007,6 +1028,7 @@ Depending on your data shape, you may want to change these values."""
                 nemo_gym_examples,
                 timer_prefix,
                 deduplicate_multimodal_data,
+                rollout_context=rollout_context,
             )
             try:
                 while True:
@@ -1024,6 +1046,8 @@ Depending on your data shape, you may want to change these values."""
         nemo_gym_examples: list[dict],
         timer_prefix: str,
         deduplicate_multimodal_data: bool = False,
+        *,
+        rollout_context: Optional[RolloutCallbackContext] = None,
     ) -> AsyncGenerator[tuple[int, dict, dict, dict | None], None]:
         """Body of :meth:`run_rollouts`; see there for the tracing wrapper."""
         self._require_spinup()
@@ -1073,6 +1097,15 @@ Depending on your data shape, you may want to change these values."""
                         # the whole point. The status and message are already in `detail`.
                         raise typed from None
                     raise
+
+            if self._rollout_result_callbacks is not None:
+                # The only point where Gym's raw result is still unmodified:
+                # postprocessing and the rollout layer rewrite the reward next.
+                # Callbacks never raise Exception; their cost shows up here.
+                with timer.time(label=f"{timer_prefix}/rollout_result_callbacks"):
+                    self._rollout_result_callbacks(
+                        nemo_gym_row, nemo_gym_result, rollout_context
+                    )
 
             with timer.time(label=f"{timer_prefix}/postprocess_results"):
                 if self._token_capture_enabled:
@@ -1810,6 +1843,13 @@ def _build_gym_actor_config(
     invalid_tool_call_patterns = nemo_gym_dict.pop("invalid_tool_call_patterns", None)
     thinking_tags = nemo_gym_dict.pop("thinking_tags", None)
     tokenizer_config = nemo_gym_dict.pop("tokenizer_config", None)
+    rollout_result_callbacks = nemo_gym_dict.pop("rollout_result_callbacks", None)
+    callback_fields: dict[str, list[str]] = {}
+    if rollout_result_callbacks:
+        # Shape only: the import happens in the actor, whose venv may differ.
+        callback_fields["rollout_result_callbacks"] = (
+            validate_rollout_result_callback_paths(rollout_result_callbacks)
+        )
     external_service_readiness = extract_external_service_readiness(nemo_gym_dict)
     port_range = {
         key: value
@@ -1854,6 +1894,7 @@ def _build_gym_actor_config(
         token_capture=token_capture,
         **port_range,
         **multimodal_flags,
+        **callback_fields,
     )
 
 

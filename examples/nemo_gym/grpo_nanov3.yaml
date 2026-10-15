@@ -338,6 +338,11 @@ env:
     # Omit to use the built-in defaults (DEFAULT_INVALID_TOOL_CALL_PATTERNS / DEFAULT_THINKING_TAGS).
     # invalid_tool_call_patterns: ["<tool_call>", "</tool_call>", "<function_call>", "</function_call>"]
     # thinking_tags: ["<think>", "</think>"]
+    # Optional "module:callable" hooks called in the NemoGym actor with each completed
+    # rollout's raw Gym result, before reward penalties/masking (e.g. for an external
+    # experiment tracker). Must be importable in the actor's venv and fast. Omit for none.
+    # See docs/design-docs/nemo-gym-integration.md#rollout-result-callbacks.
+    # rollout_result_callbacks: ["my_tracking.nemo_gym_hooks:on_rollout_result"]
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # Required! And it must be *for_training
     - resources_servers/math_with_judge/configs/math_with_judge.yaml

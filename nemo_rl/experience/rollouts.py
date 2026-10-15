@@ -64,6 +64,7 @@ from nemo_rl.environments.nemo_gym import (
     get_nemo_gym_route_name,
     get_pad_dynamic_image_shapes,
 )
+from nemo_rl.environments.nemo_gym_rollout_callbacks import RolloutCallbackContext
 from nemo_rl.experience.interfaces import (
     NEMO_GYM_GROUP_ATTEMPT_KEY,
     NEMO_GYM_GROUP_ID_KEY,
@@ -2450,6 +2451,7 @@ async def _merge_nemo_gym_instance_streams(
     timer_prefix: str,
     deduplicate_multimodal_data: bool = False,
     debug_payload_metrics: bool = False,
+    rollout_context: Optional[RolloutCallbackContext] = None,
 ) -> AsyncGenerator[tuple[int, dict, dict, dict | None, str], None]:
     """Interleave K actor streams into one, yielding rows as they complete.
 
@@ -2458,12 +2460,18 @@ async def _merge_nemo_gym_instance_streams(
     accumulator that already exists. With a single bucket it degenerates to
     that one stream, which is what keeps the unsharded path unchanged.
 
+    ``rollout_context`` is forwarded to every actor only when set, so a run
+    without it calls ``run_rollouts`` with its original arguments.
+
     Yields:
         ``(row_index, resolved_agent_ref, result, timing_metrics, instance_label)``.
         ``timing_metrics`` is non-None only on the last row of each bucket.
     """
     iterators = {}
     streams_by_iterator = {}
+    context_kwargs = (
+        {} if rollout_context is None else {"rollout_context": rollout_context}
+    )
     for instance_label, handle, rows in buckets:
         ray_arguments = (
             rows,
@@ -2482,6 +2490,7 @@ async def _merge_nemo_gym_instance_streams(
         stream = dispatch_with_trace_context(
             handle.run_rollouts.options(num_returns="streaming"),
             *ray_arguments,
+            **context_kwargs,
         )
         iterator = stream.__aiter__()
         iterators[iterator] = instance_label
@@ -2612,6 +2621,7 @@ async def run_async_nemo_gym_rollout(
     deduplicate_multimodal_data: bool = False,
     debug_payload_metrics: bool = False,
     identity_num_generations: Optional[int] = None,
+    rollout_context: Optional[RolloutCallbackContext] = None,
 ) -> AsyncGenerator[NemoGymRolloutResult, None]:
     """Stream complete NeMo-Gym prompt groups in group-completion order.
 
@@ -2659,6 +2669,8 @@ async def run_async_nemo_gym_rollout(
             prompt-group identity. Defaults to ``num_generations``. Synchronous
             callers set this independently because they collect the full batch as
             one result while preserving per-prompt GenRM cohort identities.
+        rollout_context: Training context forwarded to the actor's
+            ``env.nemo_gym.rollout_result_callbacks``; ``None`` if unknown.
 
     Yields:
         ``NemoGymRolloutResult`` objects in prompt-group completion order. Rows
@@ -2782,6 +2794,7 @@ async def run_async_nemo_gym_rollout(
                 timer_prefix,
                 deduplicate_multimodal_data,
                 debug_payload_metrics,
+                rollout_context=rollout_context,
             )
     while True:
         stream_finished = False
@@ -2877,6 +2890,7 @@ def run_nemo_gym_rollout_sync(
     mask_env_flagged_samples: bool = True,
     deduplicate_multimodal_data: bool = False,
     debug_payload_metrics: bool = False,
+    rollout_context: Optional[RolloutCallbackContext] = None,
 ) -> NemoGymRolloutResult:
     """Run and return one complete NeMo-Gym batch synchronously.
 
@@ -2915,6 +2929,8 @@ def run_nemo_gym_rollout_sync(
         deduplicate_multimodal_data: Omit initial policy-ready media from the
             remote Gym return and restore it from the input batch.
         debug_payload_metrics: Emit exact Gym Ray-boundary media payload metrics.
+        rollout_context: Training context forwarded to the actor's
+            ``env.nemo_gym.rollout_result_callbacks``; ``None`` if unknown.
 
     Returns:
         The fully postprocessed NeMo-Gym rollout batch in input-row order.
@@ -2953,6 +2969,7 @@ def run_nemo_gym_rollout_sync(
             sampling_params=sampling_params,
             deduplicate_multimodal_data=deduplicate_multimodal_data,
             debug_payload_metrics=debug_payload_metrics,
+            rollout_context=rollout_context,
         ):
             pass
         if rollout_result is None:

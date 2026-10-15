@@ -49,6 +49,47 @@ Gym result payloads are needed for a short debugging run.
 
 For complete examples, see `examples/nemo_gym/run_grpo_nemo_gym.py`, `examples/nemo_gym/run_distillation_nemo_gym.py`, and their associated configs under `examples/nemo_gym/`.
 
+### Rollout result callbacks
+
+External tools such as experiment trackers and rollout databases often need every completed rollout with the reward NeMo Gym actually returned. Downstream, NeMo RL can rewrite that reward in place (reward and length penalties, zeroing of flagged samples), so the raw value is only available inside the `NemoGym` actor. `env.nemo_gym.rollout_result_callbacks` lists functions that receive it there:
+
+```yaml
+env:
+  nemo_gym:
+    # "module:callable" import paths. Omit or leave empty for no callbacks.
+    rollout_result_callbacks:
+      - my_tracking.nemo_gym_hooks:on_rollout_result
+```
+
+```python
+# my_tracking/nemo_gym_hooks.py
+import queue
+
+from nemo_rl.environments.nemo_gym_rollout_callbacks import RolloutResultEvent
+
+_outbox: queue.SimpleQueue = queue.SimpleQueue()  # drained by a thread you own
+
+
+def on_rollout_result(event: RolloutResultEvent) -> None:
+    step = event.context.step if event.context else None
+    _outbox.put({"step": step, "group": event.group_id, "reward": event.reward})
+```
+
+Each callback is called once per rollout that NeMo Gym completes successfully. The call happens after the raw `(row, result)` pair arrives and before NeMo RL postprocesses it. The [`RolloutResultEvent`](../../nemo_rl/environments/nemo_gym_rollout_callbacks.py) carries:
+
+- `row` and `result`: read-only views of the Gym input row and the raw Gym result. The views are shallow and are not copies. Do not mutate nested values, and copy anything you keep after the call returns.
+- `reward`: the reward that Gym returned. It is `None` when the result has no numeric reward.
+- `agent_name`, `rollout_id` (`_ng_rollout_id`, set only when token capture is enabled), `task_index`, `group_id`, `group_attempt` and `rollout_index`: the Gym identity fields stamped on the row. Each field is `None` when the row does not carry it.
+- `context`: a `RolloutCallbackContext(step, weight_version, phase)` from the caller that started the batch. Synchronous GRPO training sets `step` to the step that the rollout metrics are logged at and `phase` to `"train"`. GRPO validation sets `step` to the validation step and `phase` to `"validation"`. The async GRPO collector sets `step` to the target training step and `weight_version` to the weight version that generation started from. Other callers, currently PPO, distillation and the single-controller rollout manager, pass `None`.
+
+Callbacks run synchronously on the `NemoGym` actor's event loop, in the actor's process and Python environment:
+
+- **Importable in the actor.** The callback module must be importable in the actor's environment, not only on the driver. The driver checks only the `module:callable` format of each entry. The actor imports the callbacks when it starts, so an import failure stops startup instead of the first rollout. Coroutine functions are rejected.
+- **Fast and non-blocking.** A slow callback holds up every rollout on that actor. Send network or disk I/O to a queue or thread of your own. The time spent in callbacks is reported in the rollout timing metrics as `<timer prefix>/rollout_result_callbacks`, for example `timing/rollout/rollout_result_callbacks`.
+- **Isolated from training.** If a callback raises, the error is caught and counted, and the other callbacks still run. The rollout and the training step are not affected. The first failure of each callback is logged with its traceback, and later failures are logged at most once a minute with a running count. Cancellation and `KeyboardInterrupt` still propagate.
+
+When no callbacks are configured, the actor creates no callback objects and the rollout path does no callback work.
+
 ### Shard NeMo Gym across nodes
 
 NeMo RL normally starts one NeMo Gym actor for a job. That actor runs every configured Gym server on one node. Use `env.nemo_gym.shards` when the combined environments need more capacity than one node can provide.

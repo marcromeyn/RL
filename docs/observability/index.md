@@ -90,5 +90,6 @@ Each span belongs to a **span group** that controls whether it is emitted at run
 - Exporting to an OTLP backend: [Observability Stack](observability-stack.md)
 - vLLM tracing (driver spans + native OTLP): [vLLM Tracing](vllm-tracing.md)
 - Adding new spans / metrics: [Extending Instrumentation](extending.md)
+- Raw per-rollout NeMo Gym results for external trackers: [NeMo Gym rollout result callbacks](../design-docs/nemo-gym-integration.md#rollout-result-callbacks)
 - Lens configuration model and env vars: [lens: configuration](https://github.com/NVIDIA-NeMo/Lens)
 - Instrumentation primitives (`managed_span`, `trace_fn`, `span_cm`): [lens: instrumentation](https://github.com/NVIDIA-NeMo/Lens)
